@@ -17,7 +17,7 @@
 # License along with JayDeBeApi.  If not, see
 # <http://www.gnu.org/licenses/>.
 
-__version_info__ = (1, 1, 2)
+__version_info__ = (1, 1, 1)
 __version__ = ".".join(str(i) for i in __version_info__)
 
 import datetime
@@ -74,8 +74,6 @@ _java_array_byte = None
 
 _handle_sql_exception = None
 
-old_jpype = False
-
 def _handle_sql_exception_jython():
     from java.sql import SQLException
     exc_info = sys.exc_info()
@@ -103,11 +101,10 @@ def _jdbc_connect_jython(jclassname, url, driver_args, jars, libs):
     # register driver for DriverManager
     jpackage = jclassname[:jclassname.rfind('.')]
     dclassname = jclassname[jclassname.rfind('.') + 1:]
-    # print jpackage
-    # print dclassname
-    # print jpackage
+
     from java.lang import Class
     from java.lang import ClassNotFoundException
+
     try:
         Class.forName(jclassname).newInstance()
     except ClassNotFoundException:
@@ -175,32 +172,14 @@ def _jdbc_connect_jpype(jclassname, url, driver_args, jars, libs):
         # jvm_path = ('/usr/lib/jvm/java-6-openjdk'
         #             '/jre/lib/i386/client/libjvm.so')
         jvm_path = jpype.getDefaultJVMPath()
-        global old_jpype
-        if hasattr(jpype, '__version__'):
-            try:
-                ver_match = re.match('\d+\.\d+', jpype.__version__)
-                if ver_match:
-                    jpype_ver = float(ver_match.group(0))
-                    if jpype_ver < 0.7:
-                        old_jpype = True
-            except ValueError:
-                pass
-        if old_jpype:
-            jpype.startJVM(jvm_path, *args)
-        else:
-            jpype.startJVM(jvm_path, *args, ignoreUnrecognized=True,
-                           convertStrings=True)
+        jpype.startJVM(jvm_path, *args)
     if not jpype.isThreadAttachedToJVM():
         jpype.attachThreadToJVM()
     if _jdbc_name_to_const is None:
         types = jpype.java.sql.Types
         types_map = {}
         for i in types.__javaclass__.getClassFields():
-            if old_jpype:
-                const = i.getStaticAttribute()
-            else:
-                const = i.__get__(i)
-            types_map[i.getName()] = const
+            types_map[i.getName()] = i.getStaticAttribute()
         _init_types(types_map)
     global _java_array_byte
     if _java_array_byte is None:
@@ -420,11 +399,19 @@ class Connection(object):
         self._closed = False
         self._converters = converters
 
+    @property
+    def closed(self):
+        return(self._closed)
+    
+    @closed.setter
+    def closed(self, boolean):
+        self._closed = boolean
+
     def close(self):
         if self._closed:
             raise Error()
         self.jconn.close()
-        self._closed = True
+        self.closed(True)
 
     def commit(self):
         try:
@@ -506,7 +493,6 @@ class Cursor(object):
 
     def _set_stmt_parms(self, prep_stmt, parameters):
         for i in range(len(parameters)):
-            # print (i, parameters[i], type(parameters[i]))
             prep_stmt.setObject(i + 1, parameters[i])
 
     def execute(self, operation, parameters=None):
@@ -629,22 +615,30 @@ def _to_binary(rs, col):
     return str(java_val)
 
 def _java_to_py(java_method):
-    def to_py(rs, col):
+    def to_py(rs, col, upper=16):
         java_val = rs.getObject(col)
         if java_val is None:
             return
-        if PY2 and isinstance(java_val, (string_type, int, long, float, bool)):
+        if PY2 and isinstance(java_val,
+          (string_type, int, long, float, bool)):
             return java_val
         elif isinstance(java_val, (string_type, int, float, bool)):
             return java_val
+        elif java_method == 'getSubString':
+            return(getattr(java_val,
+                           java_method)(1, getattr(java_val, "length")()))
         return getattr(java_val, java_method)()
     return to_py
+
+_to_string = _java_to_py('getSubString')
 
 _to_double = _java_to_py('doubleValue')
 
 _to_int = _java_to_py('intValue')
 
 _to_boolean = _java_to_py('booleanValue')
+
+
 
 def _init_types(types_map):
     global _jdbc_name_to_const
@@ -683,5 +677,6 @@ _DEFAULT_CONVERTERS = {
     'INTEGER': _to_int,
     'SMALLINT': _to_int,
     'BOOLEAN': _to_boolean,
-    'BIT': _to_boolean
+    'BIT': _to_boolean,
+    'CLOB': _to_string
 }
